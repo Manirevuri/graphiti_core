@@ -61,3 +61,28 @@ def compose_query_from_messages(messages: list[Message]):
     for message in messages:
         combined_query += f'{message.role_type or ""}({message.role or ""}): {message.content}\n'
     return combined_query
+
+
+# Graph visualization endpoints compatible with Zep format
+@router.get('/graph/{group_id}/nodes', status_code=status.HTTP_200_OK)
+async def get_graph_nodes(group_id: str, graphiti: ZepGraphitiDep):
+    """Get all nodes for a specific group_id"""
+    nodes = await graphiti.get_all_nodes_by_group(group_id)
+    from graph_service.zep_graphiti import transform_entity_node_to_zep_node
+    return [transform_entity_node_to_zep_node(node) for node in nodes]
+
+
+@router.get('/graph/{group_id}/edges', status_code=status.HTTP_200_OK) 
+async def get_graph_edges(group_id: str, graphiti: ZepGraphitiDep):
+    """Get all edges for a specific group_id"""
+    edges = await graphiti.get_all_edges_by_group(group_id)
+    from graph_service.zep_graphiti import transform_entity_edge_to_zep_edge
+    return [transform_entity_edge_to_zep_edge(edge) for edge in edges]
+
+
+@router.get('/graph/{group_id}/triplets', status_code=status.HTTP_200_OK)
+async def get_graph_triplets(group_id: str, graphiti: ZepGraphitiDep):
+    """Get all graph triplets (nodes + edges) for a specific group_id in Zep-compatible format"""
+    triplets = await graphiti.get_graph_triplets(group_id)
+    from graph_service.dto.retrieve import GraphTripletsResponse
+    return GraphTripletsResponse(triplets=triplets)

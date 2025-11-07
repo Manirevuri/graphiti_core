@@ -27,3 +27,8 @@ app.include_router(ingest.router)
 @app.get('/healthcheck')
 async def healthcheck():
     return JSONResponse(content={'status': 'healthy'}, status_code=200)
+
+
+@app.get('/dev-test')
+async def dev_test():
+    return JSONResponse(content={'message': 'Running from source code!', 'environment': 'development'}, status_code=200)

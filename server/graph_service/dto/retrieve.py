@@ -43,3 +43,39 @@ class GetMemoryRequest(BaseModel):
 
 class GetMemoryResponse(BaseModel):
     facts: list[FactResult] = Field(..., description='The facts that were retrieved from the graph')
+
+
+# Zep-compatible DTOs for graph visualization
+class Node(BaseModel):
+    uuid: str
+    name: str
+    summary: str | None = None
+    labels: list[str] | None = None
+    attributes: dict | None = None
+    created_at: str
+    updated_at: str
+
+
+class Edge(BaseModel):
+    uuid: str
+    source_node_uuid: str
+    target_node_uuid: str
+    type: str
+    name: str
+    fact: str | None = None
+    episodes: list[str] | None = None
+    created_at: str
+    updated_at: str
+    valid_at: str | None = None
+    expired_at: str | None = None
+    invalid_at: str | None = None
+
+
+class RawTriplet(BaseModel):
+    sourceNode: Node
+    edge: Edge
+    targetNode: Node
+
+
+class GraphTripletsResponse(BaseModel):
+    triplets: list[RawTriplet]
