@@ -7,7 +7,7 @@ from graphiti_core.nodes import EpisodeType  # type: ignore
 from graphiti_core.utils.maintenance.graph_data_operations import clear_data  # type: ignore
 
 from graph_service.dto import AddEntityNodeRequest, AddMessagesRequest, Message, Result
-from graph_service.zep_graphiti import ZepGraphitiDep
+from graph_service.zep_graphiti import ZepGraphitiDep, get_entity_types_for_context
 
 
 class AsyncWorker:
@@ -54,6 +54,9 @@ async def add_messages(
     graphiti: ZepGraphitiDep,
 ):
     async def add_messages_task(m: Message):
+        # Get entity types for healthcare ML context
+        entity_types = get_entity_types_for_context("healthcare_ml")
+        
         await graphiti.add_episode(
             uuid=m.uuid,
             group_id=request.group_id,
@@ -62,6 +65,7 @@ async def add_messages(
             reference_time=m.timestamp,
             source=EpisodeType.message,
             source_description=m.source_description,
+            entity_types=entity_types,
         )
 
     for m in request.messages:

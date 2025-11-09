@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from graph_service.config import get_settings
@@ -19,6 +20,14 @@ async def lifespan(_: FastAPI):
 
 app = FastAPI(lifespan=lifespan)
 
+# Add CORS middleware to allow frontend requests
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000", "http://localhost:3001", "http://localhost:3002"],
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 app.include_router(retrieve.router)
 app.include_router(ingest.router)

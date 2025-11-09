@@ -13,7 +13,6 @@ from graph_service.zep_graphiti import ZepGraphitiDep, get_fact_result_from_edge
 
 router = APIRouter()
 
-
 @router.post('/search', status_code=status.HTTP_200_OK)
 async def search(query: SearchQuery, graphiti: ZepGraphitiDep):
     relevant_edges = await graphiti.search(

@@ -8,9 +8,82 @@ from graphiti_core.errors import EdgeNotFoundError, GroupsEdgesNotFoundError, No
 from graphiti_core.llm_client import LLMClient  # type: ignore
 from graphiti_core.nodes import EntityNode, EpisodicNode  # type: ignore
 
+from pydantic import BaseModel, Field
 from graph_service.config import ZepEnvDep
 from graph_service.dto import FactResult
 from graph_service.dto.retrieve import Node, Edge, RawTriplet
+
+
+# Dynamic Entity Type Definitions for better categorization
+class Person(BaseModel):
+    """A human person mentioned in the conversation."""
+    first_name: str | None = Field(None, description='First name of the person')
+    last_name: str | None = Field(None, description='Last name of the person')
+    occupation: str | None = Field(None, description='Job or profession of the person')
+    role: str | None = Field(None, description='Professional role or title')
+
+
+class Organization(BaseModel):
+    """A company, institution, or organized group."""
+    organization_type: str | None = Field(None, description='Type of organization (company, NGO, etc.)')
+    industry: str | None = Field(None, description='Industry or sector')
+    location: str | None = Field(None, description='Geographic location')
+
+
+class Technology(BaseModel):
+    """Software, programming languages, tools, or technical systems."""
+    category: str | None = Field(None, description='Type of technology (language, framework, tool)')
+    version: str | None = Field(None, description='Version if applicable')
+    purpose: str | None = Field(None, description='Primary use case or purpose')
+
+
+class Concept(BaseModel):
+    """Abstract concepts, ideas, methodologies, or processes."""
+    domain: str | None = Field(None, description='Field or domain this concept belongs to')
+    complexity: str | None = Field(None, description='Complexity level (simple, moderate, complex)')
+
+
+class MedicalConcept(BaseModel):
+    """Healthcare and medical-related concepts."""
+    medical_domain: str | None = Field(None, description='Medical specialty or domain')
+    patient_related: bool | None = Field(None, description='Whether directly related to patient care')
+
+
+class Regulation(BaseModel):
+    """Legal regulations, standards, and compliance requirements."""
+    regulatory_body: str | None = Field(None, description='Organization that enforces this regulation')
+    scope: str | None = Field(None, description='Geographic or industry scope')
+    compliance_level: str | None = Field(None, description='Required compliance level')
+
+
+# Dynamic entity type registry
+def get_entity_types_for_context(context: str = "healthcare_ml") -> dict[str, type[BaseModel]]:
+    """
+    Get entity types dynamically based on context.
+    This allows different entity schemas for different domains.
+    """
+    if context == "healthcare_ml":
+        return {
+            'Person': Person,
+            'Organization': Organization, 
+            'Technology': Technology,
+            'Concept': Concept,
+            'MedicalConcept': MedicalConcept,
+            'Regulation': Regulation,
+        }
+    elif context == "general":
+        return {
+            'Person': Person,
+            'Organization': Organization,
+            'Technology': Technology,
+            'Concept': Concept,
+        }
+    else:
+        # Default minimal set
+        return {
+            'Person': Person,
+            'Organization': Organization,
+        }
 
 logger = logging.getLogger(__name__)
 
@@ -143,14 +216,72 @@ def get_fact_result_from_edge(edge: EntityEdge):
     )
 
 
+def classify_entity_type(name: str, summary: str = "") -> str:
+    """Classify entity type based on name and summary for better visualization"""
+    name_lower = name.lower()
+    summary_lower = summary.lower()
+    
+    # People/Person names (check this FIRST to avoid false positives)
+    if any(indicator in summary_lower for indicator in ['dr. ', 'doctor ', 'engineer', 'software engineer', 'professional']):
+        return "Person"
+    # Check for person name patterns (First Last, or single professional names)
+    if (name.count(' ') == 1 and name[0].isupper() and 
+        not any(tech in name_lower for tech in ['model', 'analytics', 'data', 'system', 'computer'])):
+        return "Person"
+    
+    # Technologies/Tools 
+    if any(tech in name_lower for tech in ['python', 'scikit-learn', 'pandas', 'tensorflow', 'pytorch', 'sql', 'api']):
+        return "Technology"
+    if any(indicator in summary_lower for indicator in ['programming language', 'library', 'framework', 'python library']):
+        return "Technology"
+    
+    # Companies/Organizations
+    if any(indicator in summary_lower for indicator in ['company', 'organization', 'corp', 'client', 'firm']):
+        return "Organization"
+    if name_lower.endswith('corp') or name_lower.endswith('inc') or name_lower.endswith('ltd'):
+        return "Organization"
+    
+    # Regulations/Standards
+    if any(reg in name_lower for reg in ['hipaa', 'gdpr', 'regulation', 'standard', 'compliance']):
+        return "Regulation"
+    
+    # Medical/Health concepts
+    if any(medical in name_lower for medical in ['patient', 'diabetes', 'hospitalization', 'health']):
+        return "Medical"
+    
+    # Concepts/Abstract (check this last to avoid false matches)
+    if any(concept in name_lower for concept in ['model', 'analytics', 'data', 'privacy', 'algorithm']):
+        return "Concept"
+    if any(indicator in summary_lower for indicator in ['concept', 'approach', 'method', 'process', 'consideration']):
+        return "Concept"
+    
+    # Default fallback
+    return "Entity"
+
+
 def transform_entity_node_to_zep_node(entity_node: EntityNode) -> Node:
-    """Transform Graphiti EntityNode to Zep-compatible Node format"""
+    """Transform Graphiti EntityNode to Zep-compatible Node format with enhanced categorization"""
+    # Classify the entity type for better visualization
+    entity_type = classify_entity_type(entity_node.name, entity_node.summary or "")
+    
+    # Create enhanced labels (ensure no duplicates)
+    enhanced_labels = [entity_type]
+    if entity_node.labels and entity_node.labels != ["Entity"]:
+        # Only add labels that aren't already in the list
+        for label in entity_node.labels:
+            if label not in enhanced_labels:
+                enhanced_labels.append(label)
+    
     return Node(
         uuid=entity_node.uuid,
         name=entity_node.name,
         summary=entity_node.summary or "",
-        labels=entity_node.labels,
-        attributes=entity_node.attributes,
+        labels=enhanced_labels,
+        attributes={
+            **(entity_node.attributes or {}),
+            "entity_type": entity_type,
+            "original_labels": entity_node.labels
+        },
         created_at=entity_node.created_at.isoformat(),
         updated_at=entity_node.created_at.isoformat(),  # Graphiti doesn't track updated_at separately
     )
