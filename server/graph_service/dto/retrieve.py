@@ -45,6 +45,11 @@ class GetMemoryResponse(BaseModel):
     facts: list[FactResult] = Field(..., description='The facts that were retrieved from the graph')
 
 
+class VideoSource(BaseModel):
+    file_name: str
+    cloudflare_stream_id: str | None = None
+
+
 # Zep-compatible DTOs for graph visualization
 class Node(BaseModel):
     uuid: str
@@ -52,6 +57,8 @@ class Node(BaseModel):
     summary: str | None = None
     labels: list[str] | None = None
     attributes: dict | None = None
+    source_files: list[str] | None = None  # List of source file names
+    video_sources: list[VideoSource] | None = None  # Video sources with playback info
     created_at: str
     updated_at: str
 
@@ -64,6 +71,8 @@ class Edge(BaseModel):
     name: str
     fact: str | None = None
     episodes: list[str] | None = None
+    source_files: list[str] | None = None  # List of source file names extracted from episodes
+    video_sources: list[VideoSource] | None = None  # Video sources with playback info
     created_at: str
     updated_at: str
     valid_at: str | None = None

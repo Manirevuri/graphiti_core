@@ -167,12 +167,22 @@ class ZepGraphiti(Graphiti):
 
     async def get_graph_triplets(self, group_id: str) -> list[RawTriplet]:
         """Get all graph triplets (nodes + edges) for a specific group_id in Zep-compatible format"""
-        # Get all nodes and edges for the group
+        # Get all nodes, edges, and episodes for the group
         nodes = await self.get_all_nodes_by_group(group_id)
         edges = await self.get_all_edges_by_group(group_id)
-        
-        # Transform to triplets
-        triplets = create_triplets_from_nodes_and_edges(nodes, edges)
+        episodes = await EpisodicNode.get_by_group_ids(self.driver, [group_id])
+
+        # Build episode map with both source_description and name (for fallback)
+        episode_map = {
+            ep.uuid: {
+                'source_description': ep.source_description,
+                'name': ep.name  # Fallback: older episodes have video title in name
+            }
+            for ep in episodes
+        }
+
+        # Transform to triplets with episode source info
+        triplets = create_triplets_from_nodes_and_edges(nodes, edges, episode_map)
         return triplets
 
 
@@ -259,11 +269,15 @@ def classify_entity_type(name: str, summary: str = "") -> str:
     return "Entity"
 
 
-def transform_entity_node_to_zep_node(entity_node: EntityNode) -> Node:
+def transform_entity_node_to_zep_node(
+    entity_node: EntityNode,
+    source_files: list[str] | None = None,
+    video_sources: list | None = None
+) -> Node:
     """Transform Graphiti EntityNode to Zep-compatible Node format with enhanced categorization"""
     # Classify the entity type for better visualization
     entity_type = classify_entity_type(entity_node.name, entity_node.summary or "")
-    
+
     # Create enhanced labels (ensure no duplicates)
     enhanced_labels = [entity_type]
     if entity_node.labels and entity_node.labels != ["Entity"]:
@@ -271,7 +285,7 @@ def transform_entity_node_to_zep_node(entity_node: EntityNode) -> Node:
         for label in entity_node.labels:
             if label not in enhanced_labels:
                 enhanced_labels.append(label)
-    
+
     return Node(
         uuid=entity_node.uuid,
         name=entity_node.name,
@@ -282,13 +296,82 @@ def transform_entity_node_to_zep_node(entity_node: EntityNode) -> Node:
             "entity_type": entity_type,
             "original_labels": entity_node.labels
         },
+        source_files=source_files,
+        video_sources=video_sources,
         created_at=entity_node.created_at.isoformat(),
         updated_at=entity_node.created_at.isoformat(),  # Graphiti doesn't track updated_at separately
     )
 
 
-def transform_entity_edge_to_zep_edge(entity_edge: EntityEdge) -> Edge:
+def extract_metadata_from_source_description(source_description: str) -> dict[str, str | None]:
+    """
+    Extract metadata from source_description format: [file:filename;cfstream:id] ...
+    Returns dict with 'file_name' and 'cloudflare_stream_id' keys
+    """
+    import re
+    result = {'file_name': None, 'cloudflare_stream_id': None}
+
+    # Match the metadata block [key:value;key:value]
+    match = re.match(r'\[([^\]]+)\]', source_description)
+    if match:
+        metadata_str = match.group(1)
+        # Parse each key:value pair
+        for part in metadata_str.split(';'):
+            if ':' in part:
+                key, value = part.split(':', 1)
+                if key == 'file':
+                    result['file_name'] = value
+                elif key == 'cfstream':
+                    result['cloudflare_stream_id'] = value
+
+    return result
+
+
+def transform_entity_edge_to_zep_edge(
+    entity_edge: EntityEdge,
+    episode_map: dict[str, dict[str, str]] | None = None
+) -> Edge:
     """Transform Graphiti EntityEdge to Zep-compatible Edge format"""
+    from graph_service.dto.retrieve import VideoSource
+
+    # Extract source files and video sources from episodes
+    source_files = []
+    video_sources = []
+    seen_files = set()
+
+    if episode_map and entity_edge.episodes:
+        for episode_uuid in entity_edge.episodes:
+            episode_data = episode_map.get(episode_uuid, {})
+            source_desc = episode_data.get('source_description', '')
+            episode_name = episode_data.get('name', '')
+
+            # Try to extract metadata from source_description (new format)
+            metadata = extract_metadata_from_source_description(source_desc)
+
+            file_name = metadata.get('file_name')
+            cf_stream_id = metadata.get('cloudflare_stream_id')
+
+            # Fallback: if no file_name in metadata, use episode name (for older data)
+            # Episode names for video content look like "video_title.mp4" or "Segment X (Xs-Ys)"
+            if not file_name and episode_name:
+                # Check if source_description indicates video content
+                if any(indicator in source_desc.lower() for indicator in ['video summary', 'video segment', 'video content']):
+                    # For segment episodes, extract the video title from parent context
+                    # For summary episodes, use the episode name directly
+                    if 'segment' not in episode_name.lower():
+                        file_name = episode_name
+
+            if file_name and file_name not in seen_files:
+                seen_files.add(file_name)
+                source_files.append(file_name)
+
+                # If it's a video file (has cloudflare stream id), add to video_sources
+                if cf_stream_id:
+                    video_sources.append(VideoSource(
+                        file_name=file_name,
+                        cloudflare_stream_id=cf_stream_id
+                    ))
+
     return Edge(
         uuid=entity_edge.uuid,
         source_node_uuid=entity_edge.source_node_uuid,
@@ -297,6 +380,8 @@ def transform_entity_edge_to_zep_edge(entity_edge: EntityEdge) -> Edge:
         name=entity_edge.name,
         fact=entity_edge.fact,
         episodes=entity_edge.episodes,
+        source_files=source_files if source_files else None,
+        video_sources=video_sources if video_sources else None,
         created_at=entity_edge.created_at.isoformat(),
         updated_at=entity_edge.created_at.isoformat(),  # Graphiti doesn't track updated_at separately
         valid_at=entity_edge.valid_at.isoformat() if entity_edge.valid_at else None,
@@ -305,30 +390,74 @@ def transform_entity_edge_to_zep_edge(entity_edge: EntityEdge) -> Edge:
     )
 
 
-def create_triplets_from_nodes_and_edges(nodes: list[EntityNode], edges: list[EntityEdge]) -> list[RawTriplet]:
+def create_triplets_from_nodes_and_edges(
+    nodes: list[EntityNode],
+    edges: list[EntityEdge],
+    episode_map: dict[str, dict[str, str]] | None = None
+) -> list[RawTriplet]:
     """Create triplets by combining nodes and edges, similar to Zep's logic"""
+    from graph_service.dto.retrieve import VideoSource
+
     # Create a lookup map for nodes by UUID
     node_map = {node.uuid: node for node in nodes}
-    
+
+    # First pass: compute source info for each edge and build node->sources mapping
+    node_sources: dict[str, dict] = {}  # node_uuid -> {source_files: set, video_sources: dict}
+
+    def add_sources_to_node(node_uuid: str, source_files: list[str] | None, video_sources: list | None):
+        if node_uuid not in node_sources:
+            node_sources[node_uuid] = {'source_files': set(), 'video_sources': {}}
+
+        if source_files:
+            node_sources[node_uuid]['source_files'].update(source_files)
+
+        if video_sources:
+            for vs in video_sources:
+                # Use file_name as key to deduplicate
+                node_sources[node_uuid]['video_sources'][vs.file_name] = vs
+
+    # Process all edges to collect source info for nodes
+    edge_results = []
+    for edge in edges:
+        zep_edge = transform_entity_edge_to_zep_edge(edge, episode_map)
+        edge_results.append((edge, zep_edge))
+
+        # Add edge sources to both connected nodes
+        add_sources_to_node(edge.source_node_uuid, zep_edge.source_files, zep_edge.video_sources)
+        add_sources_to_node(edge.target_node_uuid, zep_edge.source_files, zep_edge.video_sources)
+
+    # Helper to get node sources
+    def get_node_sources(node_uuid: str):
+        if node_uuid not in node_sources:
+            return None, None
+        ns = node_sources[node_uuid]
+        source_files = list(ns['source_files']) if ns['source_files'] else None
+        video_sources = list(ns['video_sources'].values()) if ns['video_sources'] else None
+        return source_files, video_sources
+
     # Create triplets from edges
     triplets = []
     connected_node_ids = set()
-    
-    for edge in edges:
+
+    for edge, zep_edge in edge_results:
         source_node = node_map.get(edge.source_node_uuid)
         target_node = node_map.get(edge.target_node_uuid)
-        
+
         if source_node and target_node:
             # Track connected nodes
             connected_node_ids.add(source_node.uuid)
             connected_node_ids.add(target_node.uuid)
-            
+
+            # Get source info for nodes
+            src_files, src_videos = get_node_sources(source_node.uuid)
+            tgt_files, tgt_videos = get_node_sources(target_node.uuid)
+
             triplets.append(RawTriplet(
-                sourceNode=transform_entity_node_to_zep_node(source_node),
-                edge=transform_entity_edge_to_zep_edge(edge),
-                targetNode=transform_entity_node_to_zep_node(target_node),
+                sourceNode=transform_entity_node_to_zep_node(source_node, src_files, src_videos),
+                edge=zep_edge,
+                targetNode=transform_entity_node_to_zep_node(target_node, tgt_files, tgt_videos),
             ))
-    
+
     # Handle isolated nodes (nodes without edges)
     for node in nodes:
         if node.uuid not in connected_node_ids:
@@ -341,20 +470,22 @@ def create_triplets_from_nodes_and_edges(nodes: list[EntityNode], edges: list[En
                 name="",
                 fact=None,
                 episodes=None,
+                source_files=None,
+                video_sources=None,
                 created_at=node.created_at.isoformat(),
                 updated_at=node.created_at.isoformat(),
                 valid_at=None,
                 expired_at=None,
                 invalid_at=None,
             )
-            
+
             zep_node = transform_entity_node_to_zep_node(node)
             triplets.append(RawTriplet(
                 sourceNode=zep_node,
                 edge=virtual_edge,
                 targetNode=zep_node,
             ))
-    
+
     return triplets
 
 

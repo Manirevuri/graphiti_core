@@ -56,7 +56,17 @@ async def add_messages(
     async def add_messages_task(m: Message):
         # Get entity types for healthcare ML context
         entity_types = get_entity_types_for_context("healthcare_ml")
-        
+
+        # Build source description with file_name and cloudflare_stream_id if provided
+        source_desc = m.source_description
+        metadata_parts = []
+        if m.file_name:
+            metadata_parts.append(f"file:{m.file_name}")
+        if m.cloudflare_stream_id:
+            metadata_parts.append(f"cfstream:{m.cloudflare_stream_id}")
+        if metadata_parts:
+            source_desc = f"[{';'.join(metadata_parts)}] {source_desc}".strip()
+
         await graphiti.add_episode(
             uuid=m.uuid,
             group_id=request.group_id,
@@ -64,7 +74,7 @@ async def add_messages(
             episode_body=f'{m.role or ""}({m.role_type}): {m.content}',
             reference_time=m.timestamp,
             source=EpisodeType.message,
-            source_description=m.source_description,
+            source_description=source_desc,
             entity_types=entity_types,
         )
 

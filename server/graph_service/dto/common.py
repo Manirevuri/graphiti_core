@@ -26,3 +26,9 @@ class Message(BaseModel):
     source_description: str = Field(
         default='', description='The description of the source of the message'
     )
+    file_name: str | None = Field(
+        default=None, description='The name of the source file (video, audio, document, etc.)'
+    )
+    cloudflare_stream_id: str | None = Field(
+        default=None, description='Cloudflare Stream ID for video playback'
+    )
